@@ -24,7 +24,7 @@ flowchart TD
     end
 
     subgraph Output["In-Place Cloud Sync"]
-        BNDL["32 Markdown Bundles<br/>(output/markdown/)"]
+        BNDL["~40 Markdown Bundles (≤50 Limit)<br/>(output/markdown/)"]
         GDRV["Google Drive API v3<br/>files().update (Preserves fileId)"]
         GDOC["Google Drive: Dash0_Knowledge_Base<br/>(Native Google Docs)"]
         NLM["NotebookLM & Gemini Gems<br/>(Auto-Synced · Zero Re-linking)"]
@@ -63,7 +63,7 @@ flowchart TD
 6. **Live Sync Health & What's New Changelog (`00_Dash0_Whats_New_Changelog`):**
    Compiles a dedicated changelog document on every run with a sync health summary, 7-day and 30-day change lists, unified diff summaries for modified pages, and struck-through entries for deprecated/404 URLs.
 7. **Automated Safety Splitting & Lightweight Image Links:**
-   Documents are partitioned along clean page boundaries with a Master Table of Contents, strictly adhering to Google Docs and NotebookLM limits. Embedded images (`![alt](url)`) are converted into clickable `[Image: alt](url)` text links so Google Docs stay lightweight (~350 KB instead of 15 MB of binary bitmaps) and ingest into NotebookLM without timeouts.
+   Documents are partitioned along clean page and heading boundaries with a Master Table of Contents, enforcing character, word, line, Markdown table, and fenced code-block budgets so Google Docs stay well inside Google Drive's 10 MB export ceiling and NotebookLM's ingestion timeouts (while keeping total docs under NotebookLM's 50-source limit). Embedded and reference-style images (`![alt](url)`, `![alt][ref]`) are converted into clickable `[Image: alt](...)` text links so Google Docs stay lightweight (~350 KB instead of 15 MB of binary bitmaps).
 8. **Automated macOS LaunchAgent Scheduling:**
    Includes a production-ready LaunchAgent running daily at 03:00 local time under `caffeinate -i` (full verification on Sundays, smart incremental Monday–Saturday).
 

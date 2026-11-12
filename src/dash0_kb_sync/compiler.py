@@ -16,7 +16,10 @@ from dash0_kb_sync.config import (
     GITHUB_BUCKET,
     PRIORITY_GITHUB_REPOS,
     SyncSettings,
+    _split_outside_code_fences,
     convert_images_to_links,
+    count_code_blocks,
+    count_markdown_tables,
     normalize_for_hash,
     utc_now_display,
 )
@@ -104,37 +107,113 @@ def _sort_bucket_pages(bucket: str, pages: list[PageRecord]) -> list[PageRecord]
     return sorted(pages, key=_web_key)
 
 
+def _split_markdown_sections_fence_safe(markdown_text: str) -> list[str]:
+    """Split Markdown along `## ` headings strictly outside fenced code blocks."""
+    sections: list[str] = []
+    cur_buf: list[str] = []
+
+    for is_code, seg in _split_outside_code_fences(markdown_text):
+        if is_code:
+            cur_buf.append(seg)
+            continue
+        parts = re.split(r"(?m)(?=^## )", seg)
+        for idx, part in enumerate(parts):
+            if idx > 0 and part.startswith("## ") and cur_buf:
+                sections.append("".join(cur_buf).strip())
+                cur_buf = [part]
+            else:
+                cur_buf.append(part)
+
+    if cur_buf:
+        tail = "".join(cur_buf).strip()
+        if tail:
+            sections.append(tail)
+
+    if len(sections) > 1:
+        return sections
+
+    # Fallback: split along double-newlines outside code fences
+    para_sections: list[str] = []
+    p_buf: list[str] = []
+    for is_code, seg in _split_outside_code_fences(markdown_text):
+        if is_code:
+            p_buf.append(seg)
+            continue
+        paras = seg.split("\n\n")
+        for idx, para in enumerate(paras):
+            if idx > 0 and p_buf:
+                joined = "".join(p_buf).strip()
+                if joined:
+                    para_sections.append(joined)
+                p_buf = [para]
+            else:
+                p_buf.append(para)
+    if p_buf:
+        joined = "".join(p_buf).strip()
+        if joined:
+            para_sections.append(joined)
+    return para_sections or [markdown_text]
+
+
 def _split_oversized_entry(
     page: PageRecord,
     max_chars: int,
     max_words: int,
+    max_tables: int,
+    max_blocks: int,
+    max_lines: int,
 ) -> list[PageRecord]:
-    """Safely split a single oversized PageRecord along `## ` headings if it ever exceeds limits."""
-    if len(page.content_markdown) <= max_chars and count_words(page.content_markdown) <= max_words:
+    """Safely split a single oversized PageRecord along fence-safe `## ` headings if it exceeds budgets."""
+    md = page.content_markdown
+    p_tables = count_markdown_tables(md)
+    p_blocks = p_tables + count_code_blocks(md)
+    p_lines = md.count("\n")
+    if (
+        len(md) <= max_chars
+        and count_words(md) <= max_words
+        and p_tables <= max_tables
+        and p_blocks <= max_blocks
+        and p_lines <= max_lines
+    ):
         return [page]
 
-    sections = re.split(r"(?m)(?=^## )", page.content_markdown)
-    if len(sections) <= 1:
-        # Hard fallback chunking by paragraphs
-        sections = page.content_markdown.split("\n\n")
+    sections = _split_markdown_sections_fence_safe(md)
 
     chunks: list[str] = []
     cur: list[str] = []
     cur_chars = 0
     cur_words = 0
+    cur_tables = 0
+    cur_blocks = 0
+    cur_lines = 0
 
     for sec in sections:
         s_chars = len(sec) + 2
         s_words = count_words(sec)
-        if cur and (cur_chars + s_chars > max_chars or cur_words + s_words > max_words):
+        s_tables = count_markdown_tables(sec)
+        s_blocks = s_tables + count_code_blocks(sec)
+        s_lines = sec.count("\n") + 2
+        if cur and (
+            cur_chars + s_chars > max_chars
+            or cur_words + s_words > max_words
+            or cur_tables + s_tables > max_tables
+            or cur_blocks + s_blocks > max_blocks
+            or cur_lines + s_lines > max_lines
+        ):
             chunks.append("\n\n".join(cur).strip())
             cur = [sec]
             cur_chars = s_chars
             cur_words = s_words
+            cur_tables = s_tables
+            cur_blocks = s_blocks
+            cur_lines = s_lines
         else:
             cur.append(sec)
             cur_chars += s_chars
             cur_words += s_words
+            cur_tables += s_tables
+            cur_blocks += s_blocks
+            cur_lines += s_lines
 
     if cur:
         chunks.append("\n\n".join(cur).strip())
@@ -214,54 +293,80 @@ def compile_bucket(
     # Reserve headroom for Master Table of Contents (~160 chars & ~20 words per TOC line + 1,200 base)
     base_char_reserve = 1_500
     base_word_reserve = 250
-    effective_page_max_chars = max(20_000, settings.max_chars_per_doc - 25_000)
+    base_line_reserve = 20
+    max_bucket_chars = (
+        min(settings.max_chars_per_doc, 320_000)
+        if bucket == API_REFERENCE_BUCKET
+        else settings.max_chars_per_doc
+    )
+    max_bucket_tables = (
+        settings.max_tables_per_doc
+        if bucket == API_REFERENCE_BUCKET
+        else min(settings.max_tables_per_doc, 180)
+    )
+    effective_page_max_chars = max(20_000, max_bucket_chars - 25_000)
     effective_page_max_words = max(5_000, settings.max_words_per_doc - 4_000)
+    effective_page_max_tables = max(30, max_bucket_tables - 20)
+    effective_page_max_blocks = max(40, settings.max_blocks_per_doc - 30)
+    effective_page_max_lines = max(800, settings.max_lines_per_doc - 800)
 
     normalized_pages: list[PageRecord] = []
     for p in ordered:
         cleaned_md = convert_images_to_links(p.content_markdown)
         page_clean = replace(p, content_markdown=cleaned_md) if cleaned_md != p.content_markdown else p
         normalized_pages.extend(
-            _split_oversized_entry(page_clean, effective_page_max_chars, effective_page_max_words)
+            _split_oversized_entry(
+                page_clean,
+                effective_page_max_chars,
+                effective_page_max_words,
+                effective_page_max_tables,
+                effective_page_max_blocks,
+                effective_page_max_lines,
+            )
         )
 
     if not normalized_pages:
         return []
 
-    # Partition deterministically along page boundaries respecting char, word, and table budgets
+    # Partition deterministically along page boundaries respecting char, word, table, block, and line budgets
     parts: list[list[PageRecord]] = []
     current_part: list[PageRecord] = []
     cur_chars = base_char_reserve
     cur_words = base_word_reserve
     cur_tables = 0
-    max_bucket_chars = (
-        min(settings.max_chars_per_doc, 320_000)
-        if bucket == API_REFERENCE_BUCKET
-        else settings.max_chars_per_doc
-    )
+    cur_blocks = 0
+    cur_lines = base_line_reserve
 
     for p in normalized_pages:
         toc_line_est_chars = len(p.title) + len(p.url) + 16
         toc_line_est_words = count_words(p.title) + 3
         entry_chars = len(p.content_markdown) + 2 + toc_line_est_chars
         entry_words = count_words(p.content_markdown) + toc_line_est_words
-        entry_tables = p.content_markdown.count("\n| :---")
+        entry_tables = count_markdown_tables(p.content_markdown)
+        entry_blocks = entry_tables + count_code_blocks(p.content_markdown)
+        entry_lines = p.content_markdown.count("\n") + 3
 
         if current_part and (
             cur_chars + entry_chars > max_bucket_chars
             or cur_words + entry_words > settings.max_words_per_doc
-            or cur_tables + entry_tables > settings.max_tables_per_doc
+            or cur_tables + entry_tables > max_bucket_tables
+            or cur_blocks + entry_blocks > settings.max_blocks_per_doc
+            or cur_lines + entry_lines > settings.max_lines_per_doc
         ):
             parts.append(current_part)
             current_part = [p]
             cur_chars = base_char_reserve + entry_chars
             cur_words = base_word_reserve + entry_words
             cur_tables = entry_tables
+            cur_blocks = entry_blocks
+            cur_lines = base_line_reserve + entry_lines
         else:
             current_part.append(p)
             cur_chars += entry_chars
             cur_words += entry_words
             cur_tables += entry_tables
+            cur_blocks += entry_blocks
+            cur_lines += entry_lines
 
     if current_part:
         parts.append(current_part)

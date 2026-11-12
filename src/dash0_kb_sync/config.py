@@ -188,6 +188,8 @@ class SyncSettings(BaseModel):
     max_chars_per_doc: int = Field(default=750_000, ge=50_000)
     max_words_per_doc: int = Field(default=120_000, ge=10_000)
     max_tables_per_doc: int = Field(default=220, ge=50, le=1000)
+    max_blocks_per_doc: int = Field(default=300, ge=50, le=2000)
+    max_lines_per_doc: int = Field(default=13_000, ge=1_000, le=100_000)
 
     def ensure_directories(self) -> None:
         """Ensure all required runtime directories exist."""
@@ -263,14 +265,64 @@ def compute_content_hash(title: str, canonical_url: str, body_markdown: str) -> 
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-_FENCED_CODE_BLOCK_RE = re.compile(r"(^`{3,}.*?^`{3,})", re.MULTILINE | re.DOTALL)
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})", re.MULTILINE)
+_MD_TABLE_SEP_RE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
 _LINKED_MD_IMG_RE = re.compile(r"\[\s*!\[([^\]]*)\]\(([^)\n]+)\)\s*\]\(([^)\n]+)\)")
+_LINKED_REF_IMG_RE = re.compile(r"\[\s*!\[([^\]]*)\]\[([^\]]*)\]\s*\]\[([^\]]+)\]")
 _MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\n]+)\)")
+_REF_IMG_RE = re.compile(r"!\[([^\]]*)\]\[([^\]]+)\]")
 _HTML_LINKED_IMG_RE = re.compile(
     r"<a\b[^>]*\bhref=[\"']([^\"']+)[\"'][^>]*>\s*(<img\b[^>]*>)\s*</a>",
     re.IGNORECASE | re.DOTALL,
 )
 _HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+
+
+def count_markdown_tables(markdown_text: str) -> int:
+    """Count GFM Markdown tables (both standard `| --- |` and aligned `| :--- |` separators)."""
+    return len(_MD_TABLE_SEP_RE.findall(markdown_text))
+
+
+def count_code_blocks(markdown_text: str) -> int:
+    """Count fenced code blocks (including indented code fences inside list items)."""
+    return len(_FENCE_LINE_RE.findall(markdown_text)) // 2
+
+
+def _split_outside_code_fences(markdown_text: str) -> list[tuple[bool, str]]:
+    """Partition `markdown_text` into `(is_code_fence, text)` segments using a fence state machine."""
+    lines = markdown_text.splitlines(keepends=True)
+    segments: list[tuple[bool, str]] = []
+    buf: list[str] = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    for line in lines:
+        m = _FENCE_LINE_RE.match(line)
+        if m:
+            marker = m.group(1)
+            if not in_fence:
+                if buf:
+                    segments.append((False, "".join(buf)))
+                    buf = []
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+                buf.append(line)
+                continue
+            if marker[0] == fence_char and len(marker) >= fence_len and line[m.end():].strip() == "":
+                buf.append(line)
+                segments.append((True, "".join(buf)))
+                buf = []
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+                continue
+        buf.append(line)
+
+    if buf:
+        segments.append((in_fence, "".join(buf)))
+    return segments
 
 
 def convert_images_to_links(markdown_text: str) -> str:
@@ -296,6 +348,11 @@ def convert_images_to_links(markdown_text: str) -> str:
             return ""
         return f"[{_clean_label(alt)}]({target_url})"
 
+    def _replace_linked_ref_img(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        link_ref = match.group(3).strip()
+        return f"[{_clean_label(alt)}][{link_ref}]"
+
     def _replace_md_img(match: re.Match[str]) -> str:
         alt = match.group(1)
         src_raw = match.group(2).strip()
@@ -303,6 +360,11 @@ def convert_images_to_links(markdown_text: str) -> str:
         if not img_url or img_url.startswith("data:"):
             return ""
         return f"[{_clean_label(alt)}]({img_url})"
+
+    def _replace_ref_img(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        img_ref = match.group(2).strip()
+        return f"[{_clean_label(alt)}][{img_ref}]"
 
     def _extract_html_alt(img_tag: str) -> str:
         m_alt = re.search(r"\balt=[\"']([^\"']*)[\"']", img_tag, re.IGNORECASE)
@@ -325,15 +387,19 @@ def convert_images_to_links(markdown_text: str) -> str:
             return ""
         return f"[{_clean_label(_extract_html_alt(tag_str))}]({src})"
 
-    segments = _FENCED_CODE_BLOCK_RE.split(markdown_text)
-    for idx in range(0, len(segments), 2):
-        seg = segments[idx]
+    out_parts: list[str] = []
+    for is_code, seg in _split_outside_code_fences(markdown_text):
+        if is_code:
+            out_parts.append(seg)
+            continue
         seg = _LINKED_MD_IMG_RE.sub(_replace_linked_md_img, seg)
+        seg = _LINKED_REF_IMG_RE.sub(_replace_linked_ref_img, seg)
         seg = _MD_IMG_RE.sub(_replace_md_img, seg)
+        seg = _REF_IMG_RE.sub(_replace_ref_img, seg)
         seg = _HTML_LINKED_IMG_RE.sub(_replace_html_linked_img, seg)
         seg = _HTML_IMG_RE.sub(_replace_html_img, seg)
-        segments[idx] = seg
-    return "".join(segments)
+        out_parts.append(seg)
+    return "".join(out_parts)
 
 
 def format_page_entry(

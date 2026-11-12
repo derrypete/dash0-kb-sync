@@ -497,14 +497,61 @@ def test_images_converted_to_lightweight_links_preserving_code_blocks() -> None:
 
     raw_gh_md = (
         "[![Build](https://img.shields.io/badge.svg)](https://github.com/dash0hq/dash0-operator/actions)\n\n"
+        "[![Unit Tests][ci-img]][ci]\n"
+        "![GitHub License][license-img]\n\n"
+        "  ```bash\n"
+        "  echo hello\n"
+        "  ```\n\n"
         "![](https://www.dash0.com/diagram.png)\n\n"
         '<img src="https://www.dash0.com/arch.png" alt="Architecture" width="600">\n\n'
         "```markdown\n![keep-inside-code-fence](https://example.com/demo.png)\n```\n"
     )
     cleaned = convert_images_to_links(raw_gh_md)
     assert "[Image: Build](https://github.com/dash0hq/dash0-operator/actions)" in cleaned
+    assert "[Image: Unit Tests][ci]" in cleaned
+    assert "[Image: GitHub License][license-img]" in cleaned
     assert "[Image](https://www.dash0.com/diagram.png)" in cleaned
     assert "[Image: Architecture](https://www.dash0.com/arch.png)" in cleaned
     assert "![keep-inside-code-fence](https://example.com/demo.png)" in cleaned
+
+
+def test_compiler_structural_block_splitting_fence_safe(tmp_path: Path) -> None:
+    """Verify code-heavy/table-heavy single pages split cleanly outside code fences."""
+    settings = SyncSettings(
+        project_root=tmp_path,
+        output_dir=tmp_path / "output" / "markdown",
+        max_chars_per_doc=750_000,
+        max_blocks_per_doc=60,
+    )
+    sections: list[str] = ["# CLI Command Reference\n\nOverview."]
+    for idx in range(12):
+        code_blocks = "\n\n".join(
+            f"```bash\n## comment inside code fence {idx}_{j}\ndash0 check-rules list\n```"
+            for j in range(6)
+        )
+        table = "| Flag | Description |\n| --- | --- |\n| `--output` | Output format |\n"
+        sections.append(f"## Command Group {idx}\n\n{table}\n{code_blocks}")
+
+    p = build_extracted_page(
+        url="https://www.dash0.com/docs/dash0/miscellaneous/tooling/dash0-cli/commands",
+        bucket="01_Dash0_Core_Docs",
+        title="Command Reference",
+        lastmod=None,
+        body_markdown="\n\n".join(sections),
+    )
+    db_path = tmp_path / "state.db"
+    with StateDB(db_path) as db:
+        db.upsert_page(p)
+        records = db.get_pages_by_bucket("01_Dash0_Core_Docs")
+
+    bundles = compile_bucket(
+        "01_Dash0_Core_Docs", records, settings, generated_display="2026-11-12 10:00 UTC"
+    )
+    assert len(bundles) >= 2
+    for b in bundles:
+        text = b.file_path.read_text(encoding="utf-8")
+        # Every output bundle must maintain balanced code fences
+        assert text.count("```") % 2 == 0
+
 
 
