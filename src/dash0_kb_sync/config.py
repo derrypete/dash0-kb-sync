@@ -187,6 +187,7 @@ class SyncSettings(BaseModel):
     # Google Docs & NotebookLM safety split thresholds
     max_chars_per_doc: int = Field(default=750_000, ge=50_000)
     max_words_per_doc: int = Field(default=120_000, ge=10_000)
+    max_tables_per_doc: int = Field(default=220, ge=50, le=1000)
 
     def ensure_directories(self) -> None:
         """Ensure all required runtime directories exist."""

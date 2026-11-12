@@ -228,30 +228,40 @@ def compile_bucket(
     if not normalized_pages:
         return []
 
-    # Partition deterministically along page boundaries respecting BOTH char and word budgets
+    # Partition deterministically along page boundaries respecting char, word, and table budgets
     parts: list[list[PageRecord]] = []
     current_part: list[PageRecord] = []
     cur_chars = base_char_reserve
     cur_words = base_word_reserve
+    cur_tables = 0
+    max_bucket_chars = (
+        min(settings.max_chars_per_doc, 320_000)
+        if bucket == API_REFERENCE_BUCKET
+        else settings.max_chars_per_doc
+    )
 
     for p in normalized_pages:
         toc_line_est_chars = len(p.title) + len(p.url) + 16
         toc_line_est_words = count_words(p.title) + 3
         entry_chars = len(p.content_markdown) + 2 + toc_line_est_chars
         entry_words = count_words(p.content_markdown) + toc_line_est_words
+        entry_tables = p.content_markdown.count("\n| :---")
 
         if current_part and (
-            cur_chars + entry_chars > settings.max_chars_per_doc
+            cur_chars + entry_chars > max_bucket_chars
             or cur_words + entry_words > settings.max_words_per_doc
+            or cur_tables + entry_tables > settings.max_tables_per_doc
         ):
             parts.append(current_part)
             current_part = [p]
             cur_chars = base_char_reserve + entry_chars
             cur_words = base_word_reserve + entry_words
+            cur_tables = entry_tables
         else:
             current_part.append(p)
             cur_chars += entry_chars
             cur_words += entry_words
+            cur_tables += entry_tables
 
     if current_part:
         parts.append(current_part)
