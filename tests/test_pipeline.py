@@ -554,4 +554,36 @@ def test_compiler_structural_block_splitting_fence_safe(tmp_path: Path) -> None:
         assert text.count("```") % 2 == 0
 
 
+def test_compiler_non_empty_paragraph_line_budget_for_yaml(tmp_path: Path) -> None:
+    """Verify dense YAML/code bundles split before exceeding Google Docs `<p>` paragraph limits."""
+    settings = SyncSettings(
+        project_root=tmp_path,
+        output_dir=tmp_path / "output" / "markdown",
+        max_non_empty_lines_per_doc=600,
+    )
+    db_path = tmp_path / "state.db"
+    with StateDB(db_path) as db:
+        for i in range(5):
+            yaml_lines = "\n".join(f"  metric_{j}: value_{j}" for j in range(180))
+            body = f"# Collector Config {i}\n\n|k|v|\n|-|-|\n|a|b|\n\n```yaml\n{yaml_lines}\n```"
+            p = build_extracted_page(
+                url=f"https://github.com/dash0hq/dash0-examples/blob/main/ex_{i}/otel.yaml",
+                bucket="09_Dash0_GitHub_Repos_and_Examples",
+                title=f"GitHub: dash0hq/dash0-examples — ex_{i}/otel.yaml",
+                lastmod=None,
+                body_markdown=body,
+            )
+            db.upsert_page(p)
+        records = db.get_pages_by_bucket("09_Dash0_GitHub_Repos_and_Examples")
+
+    bundles = compile_bucket(
+        "09_Dash0_GitHub_Repos_and_Examples", records, settings, generated_display="2026-11-12 15:00 UTC"
+    )
+    assert len(bundles) >= 2
+    for b in bundles:
+        text = b.file_path.read_text(encoding="utf-8")
+        non_empty = sum(1 for ln in text.splitlines() if ln.strip())
+        assert non_empty <= 650
+
+
 

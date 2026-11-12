@@ -24,7 +24,7 @@ flowchart TD
     end
 
     subgraph Output["In-Place Cloud Sync"]
-        BNDL["~40 Markdown Bundles (≤50 Limit)<br/>(output/markdown/)"]
+        BNDL["~44 Markdown Bundles (≤50 Limit)<br/>(output/markdown/)"]
         GDRV["Google Drive API v3<br/>files().update (Preserves fileId)"]
         GDOC["Google Drive: Dash0_Knowledge_Base<br/>(Native Google Docs)"]
         NLM["NotebookLM & Gemini Gems<br/>(Auto-Synced · Zero Re-linking)"]

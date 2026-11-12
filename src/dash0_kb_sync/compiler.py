@@ -20,6 +20,7 @@ from dash0_kb_sync.config import (
     convert_images_to_links,
     count_code_blocks,
     count_markdown_tables,
+    count_non_empty_lines,
     normalize_for_hash,
     utc_now_display,
 )
@@ -162,18 +163,21 @@ def _split_oversized_entry(
     max_tables: int,
     max_blocks: int,
     max_lines: int,
+    max_non_empty_lines: int,
 ) -> list[PageRecord]:
     """Safely split a single oversized PageRecord along fence-safe `## ` headings if it exceeds budgets."""
     md = page.content_markdown
     p_tables = count_markdown_tables(md)
     p_blocks = p_tables + count_code_blocks(md)
     p_lines = md.count("\n")
+    p_non_empty = count_non_empty_lines(md)
     if (
         len(md) <= max_chars
         and count_words(md) <= max_words
         and p_tables <= max_tables
         and p_blocks <= max_blocks
         and p_lines <= max_lines
+        and p_non_empty <= max_non_empty_lines
     ):
         return [page]
 
@@ -186,6 +190,7 @@ def _split_oversized_entry(
     cur_tables = 0
     cur_blocks = 0
     cur_lines = 0
+    cur_non_empty = 0
 
     for sec in sections:
         s_chars = len(sec) + 2
@@ -193,12 +198,14 @@ def _split_oversized_entry(
         s_tables = count_markdown_tables(sec)
         s_blocks = s_tables + count_code_blocks(sec)
         s_lines = sec.count("\n") + 2
+        s_non_empty = count_non_empty_lines(sec)
         if cur and (
             cur_chars + s_chars > max_chars
             or cur_words + s_words > max_words
             or cur_tables + s_tables > max_tables
             or cur_blocks + s_blocks > max_blocks
             or cur_lines + s_lines > max_lines
+            or cur_non_empty + s_non_empty > max_non_empty_lines
         ):
             chunks.append("\n\n".join(cur).strip())
             cur = [sec]
@@ -207,6 +214,7 @@ def _split_oversized_entry(
             cur_tables = s_tables
             cur_blocks = s_blocks
             cur_lines = s_lines
+            cur_non_empty = s_non_empty
         else:
             cur.append(sec)
             cur_chars += s_chars
@@ -214,6 +222,7 @@ def _split_oversized_entry(
             cur_tables += s_tables
             cur_blocks += s_blocks
             cur_lines += s_lines
+            cur_non_empty += s_non_empty
 
     if cur:
         chunks.append("\n\n".join(cur).strip())
@@ -294,21 +303,36 @@ def compile_bucket(
     base_char_reserve = 1_500
     base_word_reserve = 250
     base_line_reserve = 20
-    max_bucket_chars = (
-        min(settings.max_chars_per_doc, 320_000)
-        if bucket == API_REFERENCE_BUCKET
-        else settings.max_chars_per_doc
-    )
+    base_non_empty_reserve = 14
+    if bucket == API_REFERENCE_BUCKET:
+        max_bucket_chars = min(settings.max_chars_per_doc, 320_000)
+    elif bucket == GITHUB_BUCKET:
+        max_bucket_chars = min(settings.max_chars_per_doc, 450_000)
+    else:
+        max_bucket_chars = settings.max_chars_per_doc
+
     max_bucket_tables = (
         settings.max_tables_per_doc
         if bucket == API_REFERENCE_BUCKET
         else min(settings.max_tables_per_doc, 180)
     )
+    max_bucket_blocks = (
+        min(settings.max_blocks_per_doc, 240)
+        if bucket == GITHUB_BUCKET
+        else settings.max_blocks_per_doc
+    )
+    max_bucket_non_empty_lines = (
+        min(settings.max_non_empty_lines_per_doc, 6_500)
+        if bucket == GITHUB_BUCKET
+        else settings.max_non_empty_lines_per_doc
+    )
+
     effective_page_max_chars = max(20_000, max_bucket_chars - 25_000)
     effective_page_max_words = max(5_000, settings.max_words_per_doc - 4_000)
     effective_page_max_tables = max(30, max_bucket_tables - 20)
-    effective_page_max_blocks = max(40, settings.max_blocks_per_doc - 30)
+    effective_page_max_blocks = max(40, max_bucket_blocks - 30)
     effective_page_max_lines = max(800, settings.max_lines_per_doc - 800)
+    effective_page_max_non_empty = max(400, max_bucket_non_empty_lines - 500)
 
     normalized_pages: list[PageRecord] = []
     for p in ordered:
@@ -322,13 +346,14 @@ def compile_bucket(
                 effective_page_max_tables,
                 effective_page_max_blocks,
                 effective_page_max_lines,
+                effective_page_max_non_empty,
             )
         )
 
     if not normalized_pages:
         return []
 
-    # Partition deterministically along page boundaries respecting char, word, table, block, and line budgets
+    # Partition deterministically along page boundaries respecting char, word, table, block, and paragraph-line budgets
     parts: list[list[PageRecord]] = []
     current_part: list[PageRecord] = []
     cur_chars = base_char_reserve
@@ -336,6 +361,7 @@ def compile_bucket(
     cur_tables = 0
     cur_blocks = 0
     cur_lines = base_line_reserve
+    cur_non_empty = base_non_empty_reserve
 
     for p in normalized_pages:
         toc_line_est_chars = len(p.title) + len(p.url) + 16
@@ -345,13 +371,15 @@ def compile_bucket(
         entry_tables = count_markdown_tables(p.content_markdown)
         entry_blocks = entry_tables + count_code_blocks(p.content_markdown)
         entry_lines = p.content_markdown.count("\n") + 3
+        entry_non_empty = count_non_empty_lines(p.content_markdown) + 1
 
         if current_part and (
             cur_chars + entry_chars > max_bucket_chars
             or cur_words + entry_words > settings.max_words_per_doc
             or cur_tables + entry_tables > max_bucket_tables
-            or cur_blocks + entry_blocks > settings.max_blocks_per_doc
+            or cur_blocks + entry_blocks > max_bucket_blocks
             or cur_lines + entry_lines > settings.max_lines_per_doc
+            or cur_non_empty + entry_non_empty > max_bucket_non_empty_lines
         ):
             parts.append(current_part)
             current_part = [p]
@@ -360,6 +388,7 @@ def compile_bucket(
             cur_tables = entry_tables
             cur_blocks = entry_blocks
             cur_lines = base_line_reserve + entry_lines
+            cur_non_empty = base_non_empty_reserve + entry_non_empty
         else:
             current_part.append(p)
             cur_chars += entry_chars
@@ -367,6 +396,7 @@ def compile_bucket(
             cur_tables += entry_tables
             cur_blocks += entry_blocks
             cur_lines += entry_lines
+            cur_non_empty += entry_non_empty
 
     if current_part:
         parts.append(current_part)

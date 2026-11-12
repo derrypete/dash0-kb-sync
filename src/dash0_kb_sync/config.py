@@ -190,6 +190,7 @@ class SyncSettings(BaseModel):
     max_tables_per_doc: int = Field(default=220, ge=50, le=1000)
     max_blocks_per_doc: int = Field(default=300, ge=50, le=2000)
     max_lines_per_doc: int = Field(default=13_000, ge=1_000, le=100_000)
+    max_non_empty_lines_per_doc: int = Field(default=8_600, ge=500, le=100_000)
 
     def ensure_directories(self) -> None:
         """Ensure all required runtime directories exist."""
@@ -266,7 +267,7 @@ def compute_content_hash(title: str, canonical_url: str, body_markdown: str) -> 
 
 
 _FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})", re.MULTILINE)
-_MD_TABLE_SEP_RE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
+_MD_TABLE_SEP_RE = re.compile(r"^\|(?:\s*:?-+:?\s*\|)+\s*$", re.MULTILINE)
 _LINKED_MD_IMG_RE = re.compile(r"\[\s*!\[([^\]]*)\]\(([^)\n]+)\)\s*\]\(([^)\n]+)\)")
 _LINKED_REF_IMG_RE = re.compile(r"\[\s*!\[([^\]]*)\]\[([^\]]*)\]\s*\]\[([^\]]+)\]")
 _MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\n]+)\)")
@@ -286,6 +287,11 @@ def count_markdown_tables(markdown_text: str) -> int:
 def count_code_blocks(markdown_text: str) -> int:
     """Count fenced code blocks (including indented code fences inside list items)."""
     return len(_FENCE_LINE_RE.findall(markdown_text)) // 2
+
+
+def count_non_empty_lines(markdown_text: str) -> int:
+    """Count non-blank lines (each of which renders as a `<p>` or `<tr>` paragraph in Google Docs)."""
+    return sum(1 for ln in markdown_text.splitlines() if ln.strip())
 
 
 def _split_outside_code_fences(markdown_text: str) -> list[tuple[bool, str]]:
