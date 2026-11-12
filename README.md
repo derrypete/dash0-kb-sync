@@ -62,8 +62,8 @@ flowchart TD
    Persists content in SQLite with WAL mode. Content hashes normalize volatile timestamps (`Last Verified`, `Compiled At`), ensuring unchanged documents generate zero Google Drive updates.
 6. **Live Sync Health & What's New Changelog (`00_Dash0_Whats_New_Changelog`):**
    Compiles a dedicated changelog document on every run with a sync health summary, 7-day and 30-day change lists, unified diff summaries for modified pages, and struck-through entries for deprecated/404 URLs.
-7. **Automated Safety Splitting:**
-   Documents are partitioned along clean page boundaries with a Master Table of Contents, strictly adhering to Google Docs and NotebookLM limits.
+7. **Automated Safety Splitting & Lightweight Image Links:**
+   Documents are partitioned along clean page boundaries with a Master Table of Contents, strictly adhering to Google Docs and NotebookLM limits. Embedded images (`![alt](url)`) are converted into clickable `[Image: alt](url)` text links so Google Docs stay lightweight (~350 KB instead of 15 MB of binary bitmaps) and ingest into NotebookLM without timeouts.
 8. **Automated macOS LaunchAgent Scheduling:**
    Includes a production-ready LaunchAgent running daily at 03:00 local time under `caffeinate -i` (full verification on Sundays, smart incremental Monday–Saturday).
 

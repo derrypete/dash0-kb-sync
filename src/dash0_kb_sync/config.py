@@ -262,6 +262,79 @@ def compute_content_hash(title: str, canonical_url: str, body_markdown: str) -> 
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+_FENCED_CODE_BLOCK_RE = re.compile(r"(^`{3,}.*?^`{3,})", re.MULTILINE | re.DOTALL)
+_LINKED_MD_IMG_RE = re.compile(r"\[\s*!\[([^\]]*)\]\(([^)\n]+)\)\s*\]\(([^)\n]+)\)")
+_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\n]+)\)")
+_HTML_LINKED_IMG_RE = re.compile(
+    r"<a\b[^>]*\bhref=[\"']([^\"']+)[\"'][^>]*>\s*(<img\b[^>]*>)\s*</a>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+
+
+def convert_images_to_links(markdown_text: str) -> str:
+    """Convert embedded Markdown/HTML images into lightweight Markdown links outside code blocks.
+
+    When Google Drive imports Markdown into a native Google Doc, `![alt](url)` causes
+    Google's backend to download and embed binary images (ballooning docs to 10-15 MB and
+    timing out NotebookLM ingestion). Rendering `[Image: alt](url)` preserves semantic
+    context and clickable URLs while keeping every Google Doc pure lightweight text (~350 KB).
+    """
+    if "![" not in markdown_text and "<img" not in markdown_text.lower():
+        return markdown_text
+
+    def _clean_label(raw_alt: str) -> str:
+        alt = " ".join(raw_alt.split()).replace("[", "(").replace("]", ")")
+        return f"Image: {alt}" if alt else "Image"
+
+    def _replace_linked_md_img(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        target_raw = match.group(3).strip()
+        target_url = target_raw.split()[0].strip("<>") if target_raw else ""
+        if not target_url or target_url.startswith("data:"):
+            return ""
+        return f"[{_clean_label(alt)}]({target_url})"
+
+    def _replace_md_img(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        src_raw = match.group(2).strip()
+        img_url = src_raw.split()[0].strip("<>") if src_raw else ""
+        if not img_url or img_url.startswith("data:"):
+            return ""
+        return f"[{_clean_label(alt)}]({img_url})"
+
+    def _extract_html_alt(img_tag: str) -> str:
+        m_alt = re.search(r"\balt=[\"']([^\"']*)[\"']", img_tag, re.IGNORECASE)
+        return m_alt.group(1) if m_alt else ""
+
+    def _replace_html_linked_img(match: re.Match[str]) -> str:
+        href = match.group(1).strip()
+        img_tag = match.group(2)
+        if not href or href.startswith("data:"):
+            return ""
+        return f"[{_clean_label(_extract_html_alt(img_tag))}]({href})"
+
+    def _replace_html_img(match: re.Match[str]) -> str:
+        tag_str = match.group(0)
+        m_src = re.search(r"\bsrc=[\"']([^\"']+)[\"']", tag_str, re.IGNORECASE)
+        if not m_src:
+            return ""
+        src = m_src.group(1).strip()
+        if not src or src.startswith("data:"):
+            return ""
+        return f"[{_clean_label(_extract_html_alt(tag_str))}]({src})"
+
+    segments = _FENCED_CODE_BLOCK_RE.split(markdown_text)
+    for idx in range(0, len(segments), 2):
+        seg = segments[idx]
+        seg = _LINKED_MD_IMG_RE.sub(_replace_linked_md_img, seg)
+        seg = _MD_IMG_RE.sub(_replace_md_img, seg)
+        seg = _HTML_LINKED_IMG_RE.sub(_replace_html_linked_img, seg)
+        seg = _HTML_IMG_RE.sub(_replace_html_img, seg)
+        segments[idx] = seg
+    return "".join(segments)
+
+
 def format_page_entry(
     *,
     title: str,
@@ -274,7 +347,7 @@ def format_page_entry(
     """Format a page entry with the canonical Dash0 KB metadata header."""
     clean_title = " ".join(title.split()) or canonical_url
     lastmod_display = lastmod.strip() if lastmod and lastmod.strip() else "N/A"
-    clean_body = body_markdown.replace("\r\n", "\n").strip()
+    clean_body = convert_images_to_links(body_markdown.replace("\r\n", "\n")).strip()
     clean_body = re.sub(r"\n{3,}", "\n\n", clean_body)
     return (
         f"{PAGE_SEPARATOR}\n"
@@ -302,7 +375,7 @@ def build_extracted_page(
     now_iso = verified_iso or utc_now_iso()
     now_disp = verified_display or utc_now_display()
     clean_title = " ".join(title.split()) or url
-    clean_body = body_markdown.replace("\r\n", "\n").strip()
+    clean_body = convert_images_to_links(body_markdown.replace("\r\n", "\n")).strip()
     clean_body = re.sub(r"\n{3,}", "\n\n", clean_body)
     content_hash = compute_content_hash(clean_title, url, clean_body)
     content_md = format_page_entry(

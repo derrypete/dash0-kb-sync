@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dash0_kb_sync.config import (
@@ -16,6 +16,7 @@ from dash0_kb_sync.config import (
     GITHUB_BUCKET,
     PRIORITY_GITHUB_REPOS,
     SyncSettings,
+    convert_images_to_links,
     normalize_for_hash,
     utc_now_display,
 )
@@ -218,8 +219,10 @@ def compile_bucket(
 
     normalized_pages: list[PageRecord] = []
     for p in ordered:
+        cleaned_md = convert_images_to_links(p.content_markdown)
+        page_clean = replace(p, content_markdown=cleaned_md) if cleaned_md != p.content_markdown else p
         normalized_pages.extend(
-            _split_oversized_entry(p, effective_page_max_chars, effective_page_max_words)
+            _split_oversized_entry(page_clean, effective_page_max_chars, effective_page_max_words)
         )
 
     if not normalized_pages:

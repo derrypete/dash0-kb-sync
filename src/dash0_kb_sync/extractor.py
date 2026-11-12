@@ -403,6 +403,16 @@ class Dash0MarkdownConverter(MarkdownConverter):
         colspan = int(el.get("colspan", 1) or 1)
         return " " + clean + " |" * colspan
 
+    def convert_img(self, el: Tag, text: str, parent_tags: set[str]) -> str:
+        src = (el.get("src") or "").strip()
+        if not src or src.startswith("data:"):
+            return ""
+        alt = " ".join(str(el.get("alt") or "").split()).replace("[", "(").replace("]", ")")
+        label = f"Image: {alt}" if alt else "Image"
+        if "a" in parent_tags or el.find_parent("a") is not None:
+            return label
+        return f"[{label}]({src})"
+
 
 def _unwrap_nextjs_image_url(raw_url: str, page_url: str) -> str:
     """Convert `/_next/image?url=%2Fimages%2F...` into direct absolute `https://www.dash0.com/...`."""
@@ -564,11 +574,11 @@ def _normalize_dash0_dom(root: Tag, page_url: str, soup: BeautifulSoup) -> None:
             continue
         abs_href = _unwrap_nextjs_image_url(href, page_url)
         a_tag["href"] = abs_href
-        # If anchor wraps only an image with empty text, give it alt text or image filename
         if not a_tag.get_text(strip=True):
             img = a_tag.find("img")
-            if isinstance(img, Tag) and img.get("alt"):
-                a_tag.string = f"[Image: {img['alt']}]"
+            if isinstance(img, Tag):
+                alt_txt = " ".join(str(img.get("alt") or "").split()).replace("[", "(").replace("]", ")")
+                a_tag.string = f"Image: {alt_txt}" if alt_txt else "Image"
 
     for img_tag in list(root.find_all("img", src=True)):
         src = str(img_tag["src"]).strip()

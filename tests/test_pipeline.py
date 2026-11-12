@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 
 from dash0_kb_sync.changelog import generate_changelog_page
 from dash0_kb_sync.compiler import CompiledBundle, compile_bucket
-from dash0_kb_sync.config import SyncSettings, build_extracted_page
+from dash0_kb_sync.config import SyncSettings, build_extracted_page, convert_images_to_links
 from dash0_kb_sync.db import StateDB
 from dash0_kb_sync.discovery import canonicalize_dash0_url, match_bucket_for_url
 from dash0_kb_sync.extractor import EXPAND_INTERACTIVE_JS, clean_html_to_markdown
@@ -479,4 +479,32 @@ def test_gdrive_timeout_recovery_and_duplicate_prevention(
     # create() was attempted only once, then adopted via update() rather than creating a duplicate!
     assert mock_files_api.create.call_count == 1
     assert mock_files_api.update.call_count == 2
+
+
+def test_images_converted_to_lightweight_links_preserving_code_blocks() -> None:
+    """Verify HTML and Markdown images convert to `[Image: ...]` links without touching code blocks."""
+    html = """
+    <main>
+      <h1>Docker Monitoring</h1>
+      <img src="/_content/comparisons/chart.webp" alt="Container CPU Dashboard" />
+      <a href="https://github.com/dash0hq/otelbin"><img src="https://img.shields.io/badge/ci-pass.svg" alt="CI Status" /></a>
+    </main>
+    """
+    _, md = clean_html_to_markdown(html, "https://www.dash0.com/comparisons/docker")
+    assert "![" not in md
+    assert "[Image: Container CPU Dashboard](https://www.dash0.com/_content/comparisons/chart.webp)" in md
+    assert "[Image: CI Status](https://github.com/dash0hq/otelbin)" in md
+
+    raw_gh_md = (
+        "[![Build](https://img.shields.io/badge.svg)](https://github.com/dash0hq/dash0-operator/actions)\n\n"
+        "![](https://www.dash0.com/diagram.png)\n\n"
+        '<img src="https://www.dash0.com/arch.png" alt="Architecture" width="600">\n\n'
+        "```markdown\n![keep-inside-code-fence](https://example.com/demo.png)\n```\n"
+    )
+    cleaned = convert_images_to_links(raw_gh_md)
+    assert "[Image: Build](https://github.com/dash0hq/dash0-operator/actions)" in cleaned
+    assert "[Image](https://www.dash0.com/diagram.png)" in cleaned
+    assert "[Image: Architecture](https://www.dash0.com/arch.png)" in cleaned
+    assert "![keep-inside-code-fence](https://example.com/demo.png)" in cleaned
+
 
